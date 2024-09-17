@@ -1,0 +1,122 @@
+name: "$(BuildDefinitionName)_$(date:yyyyMMdd)_$(Build.BuildId)"
+
+# trigger: none
+# trigger:
+#   batch: true
+#   branches:
+#     include:
+#       - dev
+#       - feature/*
+#       - main
+# paths:
+#   exclude:
+#     - README.md
+
+pr:
+  - main
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: "azure-pipeline-service-connection"
+  - name: resource_to_deploy
+    displayName: Select Resource to Deploy
+    type: string
+    values:
+      - Resource Group
+      - Linux Web App
+      - Windows Web App
+    default: "Resource Group"
+  - name: bicepTemplateFilePath
+    type: string
+    displayName: Provide relative path to the template file. For example, resource_group/resourcegroup.bicep
+    default: "resource_group/resourcegroup.bicep"
+  - name: bicepParametersFilePath
+    type: string
+    displayName: Provide relative path to the template parameters json file. For example, resource_group/resourcegroup.parameters.json
+    default: "resource_group/resourcegroup.parameters.json"
+  - name: resourceGroupName
+    displayName: Enter Resource Group Name.
+    type: string
+    default: dev-rg
+  - name: resourceGroupLocation
+    displayName: Enter Location for Resource Group.
+    type: string
+    default: "eastus"
+  - name: simulate
+    type: boolean
+    default: false
+  - name: environment
+    type: string
+    values:
+      - dev
+      - test
+      - prod
+    default: dev
+
+# variables:
+#   - name: bicepTemplateFilePath
+#     ${{ if eq(parameters.resource_to_deploy, 'Resource Group') }}:
+#       value: "$(System.DefaultWorkingDirectory)/resource_group/resourcegroup.bicep"
+#   - name: bicepParametersFilePath
+#     ${{ if eq(parameters.resource_to_deploy, 'Resource Group') }}:
+#       value: "$(System.DefaultWorkingDirectory)/resource_group/resourcegroup.parameters.json"
+
+pool:
+  vmImage: "ubuntu-latest"
+
+stages:
+  - stage: deploy
+    jobs:
+      - deployment: "deploy_resources"
+        displayName: "${{parameters.environment}}-deployment"
+        environment: ${{parameters.environment}}
+        variables:
+          ${{ if eq(parameters.simulate,true) }}:
+            runSimulation: "--what-if"
+
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                # Deploy using template-file, JSON parameters file from parameters
+                - task: AzureCLI@2
+                  displayName: Deploy using template-file, JSON parameters file from parameters
+                  condition: eq('${{ parameters.resource_to_deploy }}', 'Resource Group')
+                  inputs:
+                    azureSubscription: ${{parameters.azureServiceConnection}}
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      az deployment sub create --location ${{parameters.resourceGroupLocation}} \
+                      --template-file "$(System.DefaultWorkingDirectory)/${{parameters.bicepTemplateFilePath}}" \
+                      --parameters @"$(System.DefaultWorkingDirectory)/${{parameters.bicepParametersFilePath}}" ${{variables.runSimulation}}
+
+                # Deploy using template-file, JSON parameters file from variables
+                # - task: AzureCLI@2
+                #   displayName: Deploy using template-file, JSON parameters file from variables
+                #   condition: eq('${{ parameters.resource_to_deploy }}', 'Resource Group')
+                #   inputs:
+                #     azureSubscription: ${{parameters.azureServiceConnection}}
+                #     scriptType: "bash"
+                #     scriptLocation: "inlineScript"
+                #     inlineScript: |
+                #       az deployment sub create --location ${{parameters.resourceGroupLocation}} \
+                #       --template-file ${{variables.bicepTemplateFilePath}} \
+                #       --parameters @${{variables.bicepParametersFilePath}} ${{variables.runSimulation}}
+
+                # Provision Windows or Linux Web App
+                # Make sure Resource Group is already created before provision Windows & Linux Web Apps
+                - task: AzureCLI@2
+                  displayName: Provision Windows or Linux Web App
+                  condition: or(eq('${{ parameters.resource_to_deploy }}', 'Linux Web App'), eq('${{ parameters.resource_to_deploy }}', 'Windows Web App'))
+                  inputs:
+                    azureSubscription: ${{parameters.azureServiceConnection}}
+                    scriptType: "bash"
+                    scriptLocation: "inlineScript"
+                    inlineScript: |
+                      az deployment group create --resource-group ${{parameters.resourceGroupName}} --name "${{parameters.environment}}-deployment-$(Build.BuildId)" \
+                      --template-file "$(System.DefaultWorkingDirectory)/${{parameters.bicepTemplateFilePath}}" \
+                      --parameters @"$(System.DefaultWorkingDirectory)/${{parameters.bicepParametersFilePath}}" ${{variables.runSimulation}}
